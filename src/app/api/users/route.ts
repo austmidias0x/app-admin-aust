@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createId } from '@paralleldrive/cuid2';
-import { requireAdmin, hashPassword } from '@/lib/auth';
-import { query, userExists, listOrganizationUsers } from '@/lib/db';
+import { requireAdmin, hashPassword, isAdmin } from '@/lib/auth';
+import { prisma, userExists, listOrganizationUsers } from '@/lib/db';
+import { organizationService } from '@/lib/services/organizationService';
 
 const createUserSchema = z.object({
   email: z.string().email('Email inválido'),
@@ -41,23 +41,37 @@ const createUserSchema = z.object({
   }).optional(),
 });
 
-// GET - Listar usuários de uma organização
+// GET - Listar TODAS as contas mães (admins independentes)
 export async function GET(request: NextRequest) {
   try {
     const user = await requireAdmin();
-    const searchParams = request.nextUrl.searchParams;
-    const organizationId = searchParams.get('organizationId') || user.id;
 
-    // Super admin pode ver qualquer organização
-    // Admin só pode ver sua própria organização
-    if (user.role !== 'super_admin' && organizationId !== user.id) {
-      return NextResponse.json(
-        { error: 'Acesso negado' },
-        { status: 403 }
-      );
-    }
-
-    const users = await listOrganizationUsers(organizationId);
+    // ===================================
+    // APP DE GESTÃO: LISTAR CONTAS MÃES
+    // ===================================
+    // Listar TODOS os admins (contas mães) do sistema
+    // Este app é para gerenciar contas, não sub-usuários
+    const users = await prisma.user.findMany({
+      where: {
+        role: 'admin',
+        organizationId: null,  // Apenas contas mães (independentes)
+      },
+      include: {
+        permissions: true,
+        _count: {
+          select: {
+            members: true,  // Conta quantos sub-usuários cada admin tem
+            spaces: true,
+            tasks: true,
+            documents: true,
+            transactions: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
 
     // Remover senhas
     const usersWithoutPasswords = users.map(({ password, ...user }: any) => user);
@@ -95,46 +109,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Definir organizationId
-    let organizationId = data.organizationId;
-    
-    // Se for admin criando usuário, usar seu próprio ID como organizationId
-    if (authUser.role === 'admin') {
-      organizationId = authUser.id;
-    }
-    
-    // Se for admin sendo criado, organizationId deve ser null
-    if (data.role === 'admin') {
-      organizationId = undefined;
-    }
+    // ===================================
+    // APP DE GESTÃO: CRIAR CONTAS MÃES
+    // ===================================
+    // Este app serve APENAS para criar admins independentes (contas mães)
+    // que depois farão login no app principal e criarão seus próprios sub-usuários.
+    //
+    // SEMPRE criar como admin com organizationId = null
+    const role = 'admin';  // Forçar role como admin
+    const organizationId = null;  // Forçar conta mãe (independente)
 
     // Senha padrão ou fornecida
     const password = data.password || 'Senha@123';
     const hashedPassword = await hashPassword(password);
 
-    const userId = createId();
-    const now = new Date().toISOString();
-
-    // Criar usuário
-    await query(
-      `INSERT INTO "User" (
-        id, email, name, password, role, active, "organizationId", "createdAt", "updatedAt"
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        userId,
-        data.email,
-        data.name,
-        hashedPassword,
-        data.role,
-        true,
-        organizationId || null,
-        now,
-        now,
-      ]
-    );
-
-    // Criar permissões
-    const permissions = data.permissions || {
+    // Permissões padrão ou fornecidas
+    const defaultPermissions = {
       canAccessTasks: true,
       canAccessDocuments: true,
       canAccessFinancial: false,
@@ -161,70 +151,35 @@ export async function POST(request: NextRequest) {
       canManageSpaces: false,
       canManageClients: false,
     };
-    const permissionId = createId();
 
-    await query(
-      `INSERT INTO "UserPermission" (
-        id, "userId",
-        "canAccessTasks", "canAccessDocuments", "canAccessFinancial",
-        "canAccessSales", "canAccessGoals", "canAccessClients",
-        "canCreateTasks", "canEditAllTasks", "canEditOwnTasks",
-        "canDeleteTasks", "canAssignTasks", "canChangeTaskDates", "canChangeTaskStatus",
-        "canCreateDocuments", "canEditDocuments", "canDeleteDocuments",
-        "canCreateTransactions", "canEditTransactions", "canDeleteTransactions", "canViewReports",
-        "canManageSales", "canManageFunnel",
-        "canManageUsers", "canManageSpaces", "canManageClients",
-        "createdAt", "updatedAt"
-      ) VALUES (
-        $1, $2,
-        $3, $4, $5, $6, $7, $8,
-        $9, $10, $11, $12, $13, $14, $15,
-        $16, $17, $18,
-        $19, $20, $21, $22,
-        $23, $24,
-        $25, $26, $27,
-        $28, $29
-      )`,
-      [
-        permissionId, userId,
-        permissions.canAccessTasks ?? true,
-        permissions.canAccessDocuments ?? true,
-        permissions.canAccessFinancial ?? false,
-        permissions.canAccessSales ?? false,
-        permissions.canAccessGoals ?? false,
-        permissions.canAccessClients ?? false,
-        permissions.canCreateTasks ?? true,
-        permissions.canEditAllTasks ?? false,
-        permissions.canEditOwnTasks ?? true,
-        permissions.canDeleteTasks ?? false,
-        permissions.canAssignTasks ?? false,
-        permissions.canChangeTaskDates ?? true,
-        permissions.canChangeTaskStatus ?? true,
-        permissions.canCreateDocuments ?? true,
-        permissions.canEditDocuments ?? false,
-        permissions.canDeleteDocuments ?? false,
-        permissions.canCreateTransactions ?? false,
-        permissions.canEditTransactions ?? false,
-        permissions.canDeleteTransactions ?? false,
-        permissions.canViewReports ?? false,
-        permissions.canManageSales ?? false,
-        permissions.canManageFunnel ?? false,
-        permissions.canManageUsers ?? false,
-        permissions.canManageSpaces ?? false,
-        permissions.canManageClients ?? false,
-        now, now,
-      ]
-    );
+    const permissions = data.permissions 
+      ? { ...defaultPermissions, ...data.permissions }
+      : defaultPermissions;
+
+    // Criar usuário com Prisma
+    const newUser = await prisma.user.create({
+      data: {
+        email: data.email.toLowerCase().trim(),
+        name: data.name.trim(),
+        password: hashedPassword,
+        role: role,  // Sempre 'admin' (conta mãe)
+        active: true,
+        organizationId: organizationId,  // Sempre null (conta independente)
+        permissions: {
+          create: permissions,
+        },
+      },
+      include: {
+        permissions: true,
+      },
+    });
+
+    // Retornar sem senha
+    const { password: _, ...userWithoutPassword } = newUser;
 
     return NextResponse.json({
       message: 'Usuário criado com sucesso',
-      user: {
-        id: userId,
-        email: data.email,
-        name: data.name,
-        role: data.role,
-        organizationId,
-      },
+      user: userWithoutPassword,
     }, { status: 201 });
   } catch (error: any) {
     if (error instanceof z.ZodError) {

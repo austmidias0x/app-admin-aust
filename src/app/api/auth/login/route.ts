@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getUserByEmail } from '@/lib/db';
-import { verifyPassword, createSession } from '@/lib/auth';
+import { authService } from '@/lib/services/authService';
+import { sessionService } from '@/lib/services/sessionService';
 
 const loginSchema = z.object({
   email: z.string().email('Email inválido'),
@@ -13,8 +13,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { email, password } = loginSchema.parse(body);
 
-    // Buscar usuário
-    const user = await getUserByEmail(email);
+    // Tentar fazer login usando o authService
+    const user = await authService.login({ email, password });
     
     if (!user) {
       return NextResponse.json(
@@ -23,34 +23,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verificar senha
-    const isValidPassword = await verifyPassword(password, user.password);
-    
-    if (!isValidPassword) {
+    // Verificar se é admin (este é um app de gestão, apenas admins)
+    if (user.role !== 'admin') {
       return NextResponse.json(
-        { error: 'Email ou senha incorretos' },
-        { status: 401 }
-      );
-    }
-
-    // Verificar se está ativo
-    if (!user.active) {
-      return NextResponse.json(
-        { error: 'Usuário desativado' },
-        { status: 403 }
-      );
-    }
-
-    // Verificar se tem permissão (admin ou super_admin)
-    if (user.role !== 'admin' && user.role !== 'super_admin') {
-      return NextResponse.json(
-        { error: 'Acesso negado. Apenas administradores.' },
+        { error: 'Acesso negado. Apenas administradores podem acessar este painel.' },
         { status: 403 }
       );
     }
 
     // Criar sessão
-    await createSession(user.id);
+    await sessionService.createSession(user.id);
 
     // Retornar usuário (sem senha)
     const { password: _, ...userWithoutPassword } = user;

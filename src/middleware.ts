@@ -1,11 +1,16 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
+/**
+ * Middleware de autenticação
+ * Protege rotas e gerencia redirecionamentos
+ */
 export function middleware(request: NextRequest) {
-  const token = request.cookies.get('admin-auth-token');
+  // Usar o mesmo cookie do app principal
+  const token = request.cookies.get('auth-token');
   const { pathname } = request.nextUrl;
 
-  // Rotas públicas
+  // Rotas públicas (sem autenticação)
   const publicPaths = ['/login'];
   const isPublicPath = publicPaths.some(path => pathname.startsWith(path));
 

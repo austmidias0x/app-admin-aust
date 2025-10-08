@@ -1,0 +1,308 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ========================================
+// MODELO PRINCIPAL: USER
+// ========================================
+
+model User {
+  id       String  @id @default(cuid())
+  email    String  @unique
+  name     String
+  password String // Hash bcrypt
+  role     String  @default("user") // admin, manager, member
+  active   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ========================================
+  // MULTI-TENANT (Sistema de Organizações)
+  // ========================================
+  // Se organizationId = null → É um admin (dono da conta)
+  // Se organizationId = adminId → É um sub-usuário (manager/member)
+  organizationId String? // ID do admin (dono da conta)
+  organization   User?   @relation("OrganizationMembers", fields: [organizationId], references: [id], onDelete: Cascade)
+  members        User[]  @relation("OrganizationMembers")
+
+
+  // ========================================
+  // RELAÇÕES COM OUTRAS TABELAS
+  // ========================================
+  permissions UserPermission?
+
+  spaces       Space[]
+  tasks        Task[]        @relation("TaskCreator")
+  assignedTasks Task[]       @relation("TaskAssignee")
+  documents    Document[]
+  transactions Transaction[]
+  sales        Sale[]        @relation("SaleOwner")
+  sellerSales  Sale[]        @relation("SaleSeller")
+  goals        Goal[]
+  salesFunnels SalesFunnel[]
+  clients      Client[]
+
+  @@index([email])
+  @@index([organizationId])
+  @@index([role])
+  @@index([active])
+}
+
+// ========================================
+// PERMISSÕES DE USUÁRIO (1:1 com User)
+// ========================================
+
+model UserPermission {
+  id     String @id @default(cuid())
+  userId String @unique // Cada usuário tem apenas 1 registro
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // ACESSO A MÓDULOS
+  canAccessTasks     Boolean @default(false)
+  canAccessDocuments Boolean @default(false)
+  canAccessFinancial Boolean @default(false)
+  canAccessSales     Boolean @default(false)
+  canAccessGoals     Boolean @default(false)
+  canAccessClients   Boolean @default(false)
+
+  // PERMISSÕES DE TAREFAS
+  canCreateTasks      Boolean @default(false)
+  canEditAllTasks     Boolean @default(false)
+  canEditOwnTasks     Boolean @default(true)
+  canDeleteTasks      Boolean @default(false)
+  canAssignTasks      Boolean @default(false)
+  canChangeTaskDates  Boolean @default(false)
+  canChangeTaskStatus Boolean @default(true)
+
+  // PERMISSÕES DE DOCUMENTOS
+  canCreateDocuments Boolean @default(false)
+  canEditDocuments   Boolean @default(false)
+  canDeleteDocuments Boolean @default(false)
+
+  // PERMISSÕES FINANCEIRAS
+  canCreateTransactions Boolean @default(false)
+  canEditTransactions   Boolean @default(false)
+  canDeleteTransactions Boolean @default(false)
+  canViewReports        Boolean @default(false)
+
+  // PERMISSÕES DE VENDAS
+  canManageSales  Boolean @default(false)
+  canManageFunnel Boolean @default(false)
+
+  // PERMISSÕES DE GERENCIAMENTO
+  canManageUsers   Boolean @default(false)
+  canManageSpaces  Boolean @default(false)
+  canManageClients Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ========================================
+// ESPAÇOS DE TRABALHO
+// ========================================
+
+model Space {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  color       String?
+  icon        String?
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folders     Folder[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ========================================
+// PASTAS / CLIENTES
+// ========================================
+
+model Folder {
+  id        String   @id @default(cuid())
+  name      String
+  spaceId   String
+  space     Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  lists     List[]
+  documents Document[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([spaceId])
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  company   String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sales     Sale[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ========================================
+// LISTAS / KANBANS
+// ========================================
+
+model List {
+  id        String   @id @default(cuid())
+  name      String
+  order     Int      @default(0)
+  folderId  String
+  folder    Folder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  tasks     Task[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([folderId])
+}
+
+// ========================================
+// TAREFAS
+// ========================================
+
+model Task {
+  id           String    @id @default(cuid())
+  title        String
+  description  String?
+  status       String    @default("todo") // todo, in_progress, review, done
+  priority     String?   @default("medium") // low, medium, high, urgent
+  dueDate      DateTime?
+  completedAt  DateTime?
+  listId       String?
+  list         List?     @relation(fields: [listId], references: [id], onDelete: SetNull)
+  userId       String // Criador da tarefa
+  user         User      @relation("TaskCreator", fields: [userId], references: [id], onDelete: Cascade)
+  assignedToId String? // Responsável pela tarefa
+  assignedTo   User?     @relation("TaskAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([assignedToId])
+  @@index([listId])
+  @@index([status])
+}
+
+// ========================================
+// DOCUMENTOS
+// ========================================
+
+model Document {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  folderId  String?
+  folder    Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([folderId])
+}
+
+// ========================================
+// TRANSAÇÕES FINANCEIRAS
+// ========================================
+
+model Transaction {
+  id          String   @id @default(cuid())
+  description String
+  amount      Float
+  type        String // income, expense
+  category    String?
+  date        DateTime
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+  @@index([type])
+  @@index([date])
+}
+
+// ========================================
+// VENDAS
+// ========================================
+
+model Sale {
+  id          String    @id @default(cuid())
+  title       String
+  description String?
+  amount      Float
+  status      String    @default("lead") // lead, negotiation, closed, lost
+  clientId    String?
+  client      Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  userId      String // Dono da venda
+  user        User      @relation("SaleOwner", fields: [userId], references: [id], onDelete: Cascade)
+  sellerId    String? // Vendedor responsável
+  seller      User?     @relation("SaleSeller", fields: [sellerId], references: [id], onDelete: SetNull)
+  closedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([sellerId])
+  @@index([clientId])
+  @@index([status])
+}
+
+// ========================================
+// FUNIL DE VENDAS
+// ========================================
+
+model SalesFunnel {
+  id        String   @id @default(cuid())
+  name      String
+  stages    Json // Array de estágios do funil
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ========================================
+// METAS
+// ========================================
+
+model Goal {
+  id        String   @id @default(cuid())
+  title     String
+  target    Float
+  current   Float    @default(0)
+  deadline  DateTime
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([deadline])
+}
+

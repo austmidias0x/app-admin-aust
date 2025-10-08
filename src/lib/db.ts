@@ -1,105 +1,150 @@
-import { sql } from '@vercel/postgres';
+import { prisma } from './prisma';
+import type { UserWithPermissions, UserWithStats } from './types';
 
-export { sql };
+// Re-exportar prisma para compatibilidade
+export { prisma };
 
-// Helper para executar queries com tratamento de erro
-export async function query<T = any>(
-  queryText: string,
-  params?: any[]
-): Promise<T[]> {
-  try {
-    const result = await sql.query(queryText, params);
-    return result.rows as T[];
-  } catch (error) {
-    console.error('Database query error:', error);
-    throw error;
-  }
-}
-
-// Helper para verificar se usuário existe
+/**
+ * Verifica se um usuário existe pelo email
+ */
 export async function userExists(email: string): Promise<boolean> {
-  const result = await query<{ count: number }>(
-    'SELECT COUNT(*) as count FROM "User" WHERE email = $1',
-    [email]
-  );
-  return result[0].count > 0;
+  const count = await prisma.user.count({
+    where: { email: email.toLowerCase().trim() },
+  });
+  return count > 0;
 }
 
-// Helper para buscar usuário por ID
-export async function getUserById(id: string) {
-  const result = await query(
-    `SELECT 
-      u.*,
-      up.* 
-    FROM "User" u
-    LEFT JOIN "UserPermission" up ON u.id = up."userId"
-    WHERE u.id = $1`,
-    [id]
-  );
-  return result[0] || null;
+/**
+ * Busca usuário por ID com permissões
+ */
+export async function getUserById(id: string): Promise<UserWithPermissions | null> {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    include: {
+      permissions: true,
+      _count: {
+        select: {
+          assignedTasks: true,
+          tasks: true,
+          documents: true,
+          transactions: true,
+        },
+      },
+    },
+  });
+
+  return user;
 }
 
-// Helper para buscar usuário por email
-export async function getUserByEmail(email: string) {
-  const result = await query(
-    `SELECT 
-      u.*,
-      up.* 
-    FROM "User" u
-    LEFT JOIN "UserPermission" up ON u.id = up."userId"
-    WHERE u.email = $1`,
-    [email]
-  );
-  return result[0] || null;
+/**
+ * Busca usuário por email com permissões
+ */
+export async function getUserByEmail(email: string): Promise<UserWithPermissions | null> {
+  const user = await prisma.user.findUnique({
+    where: { email: email.toLowerCase().trim() },
+    include: {
+      permissions: true,
+      _count: {
+        select: {
+          assignedTasks: true,
+          tasks: true,
+          documents: true,
+          transactions: true,
+        },
+      },
+    },
+  });
+
+  return user;
 }
 
-// Helper para buscar organização (admin) por ID
-export async function getOrganizationById(id: string) {
-  const result = await query(
-    `SELECT * FROM "User" WHERE id = $1 AND role = 'admin' AND "organizationId" IS NULL`,
-    [id]
-  );
-  return result[0] || null;
+/**
+ * Busca organização (admin) por ID
+ */
+export async function getOrganizationById(id: string): Promise<UserWithStats | null> {
+  const organization = await prisma.user.findFirst({
+    where: {
+      id,
+      role: 'admin',
+      organizationId: null,
+    },
+    include: {
+      permissions: true,
+      _count: {
+        select: {
+          members: true,
+          spaces: true,
+          tasks: true,
+          documents: true,
+          transactions: true,
+          sales: true,
+          goals: true,
+        },
+      },
+    },
+  });
+
+  return organization;
 }
 
-// Helper para listar todas as organizações
-export async function listOrganizations() {
-  const result = await query(
-    `SELECT 
-      id, 
-      email, 
-      name, 
-      active, 
-      "createdAt", 
-      "updatedAt"
-    FROM "User" 
-    WHERE role = 'admin' AND "organizationId" IS NULL
-    ORDER BY "createdAt" DESC`
-  );
-  return result;
+/**
+ * Lista todas as organizações (admins)
+ */
+export async function listOrganizations(): Promise<UserWithStats[]> {
+  const organizations = await prisma.user.findMany({
+    where: {
+      role: 'admin',
+      organizationId: null,
+    },
+    include: {
+      permissions: true,
+      _count: {
+        select: {
+          members: true,
+          spaces: true,
+          tasks: true,
+          documents: true,
+          transactions: true,
+          sales: true,
+          goals: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  });
+
+  return organizations;
 }
 
-// Helper para listar usuários de uma organização
-export async function listOrganizationUsers(organizationId: string) {
-  const result = await query(
-    `SELECT 
-      u.*,
-      up."canAccessTasks",
-      up."canAccessDocuments",
-      up."canAccessFinancial",
-      up."canAccessSales",
-      up."canAccessGoals",
-      up."canAccessClients",
-      up."canManageUsers",
-      up."canManageSpaces",
-      up."canManageClients",
-      (SELECT COUNT(*) FROM "Task" WHERE "assignedToId" = u.id) as tasks_count
-    FROM "User" u
-    LEFT JOIN "UserPermission" up ON u.id = up."userId"
-    WHERE u."organizationId" = $1 OR u.id = $1
-    ORDER BY u."createdAt" DESC`,
-    [organizationId]
-  );
-  return result;
+/**
+ * Lista usuários de uma organização (admin + membros)
+ */
+export async function listOrganizationUsers(organizationId: string): Promise<UserWithPermissions[]> {
+  const users = await prisma.user.findMany({
+    where: {
+      OR: [
+        { id: organizationId }, // O admin
+        { organizationId: organizationId }, // Os membros
+      ],
+    },
+    include: {
+      permissions: true,
+      _count: {
+        select: {
+          assignedTasks: true,
+          tasks: true,
+          documents: true,
+          transactions: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  });
+
+  return users;
 }
 

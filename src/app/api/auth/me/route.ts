@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/auth';
+import { getAuthUser, destroySession } from '@/lib/auth';
 
 export async function GET() {
   try {
     const user = await getAuthUser();
     
     if (!user) {
+      // Se não encontrou o usuário, limpa o cookie inválido
+      await destroySession();
       return NextResponse.json(
         { error: 'Não autenticado' },
         { status: 401 }
@@ -18,6 +20,8 @@ export async function GET() {
     return NextResponse.json({ user: userWithoutPassword });
   } catch (error) {
     console.error('Get user error:', error);
+    // Em caso de erro, também limpa o cookie
+    await destroySession();
     return NextResponse.json(
       { error: 'Erro ao buscar usuário' },
       { status: 500 }

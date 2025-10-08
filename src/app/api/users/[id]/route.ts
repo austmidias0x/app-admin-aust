@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin, canManageUser, hashPassword } from '@/lib/auth';
-import { query, getUserById } from '@/lib/db';
+import { prisma, getUserById } from '@/lib/db';
 
 const updateUserSchema = z.object({
   name: z.string().min(3, 'Nome deve ter no mínimo 3 caracteres').optional(),
@@ -112,73 +112,41 @@ export async function PUT(
       );
     }
 
-    const now = new Date().toISOString();
-
-    // Atualizar dados do usuário
-    const updates: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
+    // Preparar dados para atualização
+    const updateData: any = {};
 
     if (data.name !== undefined) {
-      updates.push(`name = $${paramIndex++}`);
-      values.push(data.name);
+      updateData.name = data.name.trim();
     }
 
     if (data.email !== undefined) {
-      updates.push(`email = $${paramIndex++}`);
-      values.push(data.email);
+      updateData.email = data.email.toLowerCase().trim();
     }
 
     if (data.password !== undefined) {
-      const hashedPassword = await hashPassword(data.password);
-      updates.push(`password = $${paramIndex++}`);
-      values.push(hashedPassword);
+      updateData.password = await hashPassword(data.password);
     }
 
     if (data.role !== undefined) {
-      updates.push(`role = $${paramIndex++}`);
-      values.push(data.role);
+      updateData.role = data.role;
     }
 
     if (data.active !== undefined) {
-      updates.push(`active = $${paramIndex++}`);
-      values.push(data.active);
+      updateData.active = data.active;
     }
 
-    if (updates.length > 0) {
-      updates.push(`"updatedAt" = $${paramIndex++}`);
-      values.push(now);
-      values.push(id);
-
-      await query(
-        `UPDATE "User" SET ${updates.join(', ')} WHERE id = $${paramIndex}`,
-        values
-      );
-    }
+    // Atualizar usuário com Prisma
+    await prisma.user.update({
+      where: { id },
+      data: updateData,
+    });
 
     // Atualizar permissões se fornecidas
-    if (data.permissions) {
-      const permUpdates: string[] = [];
-      const permValues: any[] = [];
-      let permParamIndex = 1;
-
-      Object.entries(data.permissions).forEach(([key, value]) => {
-        if (value !== undefined) {
-          permUpdates.push(`"${key}" = $${permParamIndex++}`);
-          permValues.push(value);
-        }
+    if (data.permissions && Object.keys(data.permissions).length > 0) {
+      await prisma.userPermission.update({
+        where: { userId: id },
+        data: data.permissions,
       });
-
-      if (permUpdates.length > 0) {
-        permUpdates.push(`"updatedAt" = $${permParamIndex++}`);
-        permValues.push(now);
-        permValues.push(id);
-
-        await query(
-          `UPDATE "UserPermission" SET ${permUpdates.join(', ')} WHERE "userId" = $${permParamIndex}`,
-          permValues
-        );
-      }
     }
 
     return NextResponse.json({
@@ -241,13 +209,11 @@ export async function DELETE(
       );
     }
 
-    const now = new Date().toISOString();
-
-    // Soft delete - apenas desativa
-    await query(
-      `UPDATE "User" SET active = false, "updatedAt" = $1 WHERE id = $2`,
-      [now, id]
-    );
+    // Soft delete - apenas desativa usando Prisma
+    await prisma.user.update({
+      where: { id },
+      data: { active: false },
+    });
 
     return NextResponse.json({
       message: 'Usuário desativado com sucesso',
