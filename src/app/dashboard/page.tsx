@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import UserModal from '@/components/UserModal';
+import SubUserModal from '@/components/SubUserModal';
 import { formatDate, getRoleName, getRoleBadgeColor } from '@/lib/utils';
 
 interface User {
@@ -17,15 +18,38 @@ interface User {
   [key: string]: any;
 }
 
+interface SubUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'manager' | 'member';
+  active: boolean;
+  organizationId: string;
+  permissions?: any;
+  _count?: {
+    tasks?: number;
+    documents?: number;
+    transactions?: number;
+    sales?: number;
+  };
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [users, setUsers] = useState<User[]>([]);
+  const [subUsers, setSubUsers] = useState<Record<string, SubUser[]>>({});
+  const [loadingSubUsers, setLoadingSubUsers] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [subUserModalOpen, setSubUserModalOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | undefined>(undefined);
+  const [selectedSubUser, setSelectedSubUser] = useState<SubUser | undefined>(undefined);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [activityFilter, setActivityFilter] = useState('all');
+  const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     loadCurrentUser();
@@ -68,11 +92,73 @@ export default function DashboardPage() {
       
       if (response.ok) {
         setUsers(data.users);
+        // Carregar sub-usuários para cada conta admin
+        await loadSubUsersForAdmins(data.users);
       }
     } catch (error) {
       console.error('Error loading users:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadSubUsersForAdmins = async (adminUsers: User[]) => {
+    const subUsersData: Record<string, SubUser[]> = {};
+    
+    for (const admin of adminUsers) {
+      // Tentar carregar sub-usuários para todos os admins, não apenas os que já têm members
+      // A API retornará array vazio se não houver sub-usuários
+      if (admin.role === 'admin') {
+        try {
+          const response = await fetch(`/api/organizations/${admin.id}/sub-users`);
+          const data = await response.json();
+          
+          if (response.ok) {
+            subUsersData[admin.id] = data.subUsers || [];
+          } else {
+            console.error(`Error loading sub-users for admin ${admin.id}:`, data.error);
+            subUsersData[admin.id] = [];
+          }
+        } catch (error) {
+          console.error(`Error loading sub-users for admin ${admin.id}:`, error);
+          subUsersData[admin.id] = [];
+        }
+      }
+    }
+    
+    setSubUsers(subUsersData);
+  };
+
+  const loadSubUsers = async (organizationId: string) => {
+    setLoadingSubUsers(prev => new Set(prev).add(organizationId));
+    try {
+      const response = await fetch(`/api/organizations/${organizationId}/sub-users`);
+      const data = await response.json();
+      
+      if (response.ok) {
+        setSubUsers(prev => ({
+          ...prev,
+          [organizationId]: data.subUsers || []
+        }));
+      } else {
+        console.error('Error loading sub-users:', data.error);
+        setSubUsers(prev => ({
+          ...prev,
+          [organizationId]: []
+        }));
+      }
+    } catch (error) {
+      console.error('Error loading sub-users:', error);
+      setSubUsers(prev => ({
+        ...prev,
+        [organizationId]: []
+      }));
+    } finally {
+      setLoadingSubUsers(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(organizationId);
+        return newSet;
+      });
     }
   };
 
@@ -111,7 +197,13 @@ export default function DashboardPage() {
   };
 
   const handleDeleteUser = async (user: User) => {
-    if (!confirm(`Tem certeza que deseja DESATIVAR ${user.name}? Esta ação não pode ser desfeita.`)) {
+    const isSuperAdmin = currentUser?.email === 'austmidias@gmail.com';
+    const actionText = isSuperAdmin ? 'EXCLUIR PERMANENTEMENTE' : 'DESATIVAR';
+    const warningText = isSuperAdmin 
+      ? `Tem certeza que deseja EXCLUIR PERMANENTEMENTE ${user.name}? Esta ação remove completamente a conta e NÃO pode ser desfeita.`
+      : `Tem certeza que deseja DESATIVAR ${user.name}? Esta ação pode ser revertida.`;
+
+    if (!confirm(warningText)) {
       return;
     }
 
@@ -121,14 +213,16 @@ export default function DashboardPage() {
       });
 
       if (response.ok) {
+        const data = await response.json();
+        alert(data.message || `${actionText} realizado com sucesso`);
         loadUsers();
       } else {
         const data = await response.json();
-        alert(data.error || 'Erro ao desativar usuário');
+        alert(data.error || `Erro ao ${actionText.toLowerCase()} usuário`);
       }
     } catch (error) {
       console.error('Error deleting user:', error);
-      alert('Erro ao desativar usuário');
+      alert(`Erro ao ${actionText.toLowerCase()} usuário`);
     }
   };
 
@@ -151,6 +245,128 @@ export default function DashboardPage() {
     loadUsers();
   };
 
+  const handleSubUserModalSuccess = () => {
+    if (selectedOrganizationId) {
+      loadSubUsers(selectedOrganizationId);
+    }
+  };
+
+  const openSubUserCreateModal = (organizationId: string) => {
+    setSelectedOrganizationId(organizationId);
+    setSelectedSubUser(undefined);
+    setSubUserModalOpen(true);
+  };
+
+  const openSubUserEditModal = (subUser: SubUser, organizationId: string) => {
+    setSelectedOrganizationId(organizationId);
+    setSelectedSubUser(subUser);
+    setSubUserModalOpen(true);
+  };
+
+  const closeSubUserModal = () => {
+    setSubUserModalOpen(false);
+    setSelectedSubUser(undefined);
+    setSelectedOrganizationId('');
+  };
+
+  const handleToggleSubUserActive = async (subUser: SubUser, organizationId: string) => {
+    if (!confirm(`Tem certeza que deseja ${subUser.active ? 'desativar' : 'ativar'} ${subUser.name}?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/organizations/${organizationId}/sub-users/${subUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !subUser.active }),
+      });
+
+      if (response.ok) {
+        loadSubUsers(organizationId);
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Erro ao atualizar sub-usuário');
+      }
+    } catch (error) {
+      console.error('Error toggling sub-user:', error);
+      alert('Erro ao atualizar sub-usuário');
+    }
+  };
+
+  const handleDeleteSubUser = async (subUser: SubUser, organizationId: string) => {
+    const isSuperAdmin = currentUser?.email === 'austmidias@gmail.com';
+    const actionText = isSuperAdmin ? 'EXCLUIR PERMANENTEMENTE' : 'DESATIVAR';
+    const warningText = isSuperAdmin 
+      ? `Tem certeza que deseja EXCLUIR PERMANENTEMENTE ${subUser.name}? Esta ação remove completamente a conta e NÃO pode ser desfeita.`
+      : `Tem certeza que deseja DESATIVAR ${subUser.name}? Esta ação pode ser revertida.`;
+
+    if (!confirm(warningText)) {
+      return;
+    }
+
+    try {
+      const url = isSuperAdmin 
+        ? `/api/organizations/${organizationId}/sub-users/${subUser.id}?hard=true`
+        : `/api/organizations/${organizationId}/sub-users/${subUser.id}`;
+
+      const response = await fetch(url, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        alert(data.message || `${actionText} realizado com sucesso`);
+        loadSubUsers(organizationId);
+      } else {
+        const data = await response.json();
+        alert(data.error || `Erro ao ${actionText.toLowerCase()} sub-usuário`);
+      }
+    } catch (error) {
+      console.error('Error deleting sub-user:', error);
+      alert(`Erro ao ${actionText.toLowerCase()} sub-usuário`);
+    }
+  };
+
+  const handleReactivateSubUser = async (subUser: SubUser, organizationId: string) => {
+    if (!confirm(`Tem certeza que deseja reativar ${subUser.name}?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/organizations/${organizationId}/sub-users/${subUser.id}/reactivate`, {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        alert('Sub-usuário reativado com sucesso');
+        loadSubUsers(organizationId);
+      } else {
+        const data = await response.json();
+        alert(data.error || 'Erro ao reativar sub-usuário');
+      }
+    } catch (error) {
+      console.error('Error reactivating sub-user:', error);
+      alert('Erro ao reativar sub-usuário');
+    }
+  };
+
+  const toggleUserExpansion = async (userId: string) => {
+    // Se está expandindo e ainda não carregou os sub-usuários, carregar agora
+    if (!expandedUsers.has(userId) && !subUsers[userId]) {
+      await loadSubUsers(userId);
+    }
+    
+    setExpandedUsers(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(userId)) {
+        newSet.delete(userId);
+      } else {
+        newSet.add(userId);
+      }
+      return newSet;
+    });
+  };
+
   // Filtros
   const filteredUsers = users.filter(user => {
     const matchesSearch = user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -158,14 +374,19 @@ export default function DashboardPage() {
     const matchesStatus = statusFilter === 'all' || 
                          (statusFilter === 'active' && user.active) ||
                          (statusFilter === 'inactive' && !user.active);
+    const matchesActivity = activityFilter === 'all' ||
+                           (activityFilter === 'with_activity' && (user._count?.members > 0 || user._count?.spaces > 0 || user._count?.tasks > 0)) ||
+                           (activityFilter === 'without_activity' && (user._count?.members === 0 && user._count?.spaces === 0 && user._count?.tasks === 0));
     
-    return matchesSearch && matchesStatus;
+    return matchesSearch && matchesStatus && matchesActivity;
   });
 
   const stats = {
     total: users.length,
     active: users.filter(u => u.active).length,
     inactive: users.filter(u => !u.active).length,
+    withActivity: users.filter(u => (u._count?.members > 0 || u._count?.spaces > 0 || u._count?.tasks > 0)).length,
+    withoutActivity: users.filter(u => (u._count?.members === 0 && u._count?.spaces === 0 && u._count?.tasks === 0)).length,
     // Contar sub-usuários totais (members de todas as contas)
     totalMembers: users.reduce((acc, u) => acc + (u._count?.members || 0), 0),
     // Contar tarefas totais
@@ -196,13 +417,19 @@ export default function DashboardPage() {
               </div>
               <div>
                 <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-                  Gestão de Contas Mães
+                  {currentUser.email === 'austmidias@gmail.com' || currentUser.role === 'super_admin'
+                    ? 'Gestão de Contas Mães'
+                    : 'Gestão de Sub-usuários'}
                 </h1>
                 <p className="text-sm text-gray-600 mt-0.5">
                   <span className="font-semibold text-gray-900">{currentUser.name}</span>
                   <span className="mx-1.5 text-gray-400">•</span>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">
-                    Super Admin
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                    currentUser.email === 'austmidias@gmail.com' || currentUser.role === 'super_admin'
+                      ? 'bg-purple-100 text-purple-700' 
+                      : 'bg-indigo-100 text-indigo-700'
+                  }`}>
+                    {currentUser.email === 'austmidias@gmail.com' || currentUser.role === 'super_admin' ? 'Super Admin' : 'Admin'}
                   </span>
                 </p>
               </div>
@@ -225,30 +452,34 @@ export default function DashboardPage() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-lg border border-gray-200/50 p-5 hover:shadow-xl transition-all hover:scale-105">
             <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Contas Mães</div>
             <div className="text-3xl font-bold text-gray-900">{stats.total}</div>
+            <div className="text-xs text-gray-500 mt-1">
+              {stats.active} ativas • {stats.inactive} inativas
+            </div>
           </div>
           <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-2xl shadow-lg border border-green-200/50 p-5 hover:shadow-xl transition-all hover:scale-105">
-            <div className="text-xs font-semibold text-green-700 uppercase mb-2">Ativas</div>
-            <div className="text-3xl font-bold text-green-600">{stats.active}</div>
-          </div>
-          <div className="bg-gradient-to-br from-red-50 to-rose-50 rounded-2xl shadow-lg border border-red-200/50 p-5 hover:shadow-xl transition-all hover:scale-105">
-            <div className="text-xs font-semibold text-red-700 uppercase mb-2">Inativas</div>
-            <div className="text-3xl font-bold text-red-600">{stats.inactive}</div>
+            <div className="text-xs font-semibold text-green-700 uppercase mb-2">Com Atividade</div>
+            <div className="text-3xl font-bold text-green-600">{stats.withActivity}</div>
+            <div className="text-xs text-green-600 mt-1">
+              {stats.withoutActivity} sem atividade
+            </div>
           </div>
           <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl shadow-lg border border-blue-200/50 p-5 hover:shadow-xl transition-all hover:scale-105">
             <div className="text-xs font-semibold text-blue-700 uppercase mb-2">Sub-usuários</div>
             <div className="text-3xl font-bold text-blue-600">{stats.totalMembers}</div>
-          </div>
-          <div className="bg-gradient-to-br from-purple-50 to-violet-50 rounded-2xl shadow-lg border border-purple-200/50 p-5 hover:shadow-xl transition-all hover:scale-105">
-            <div className="text-xs font-semibold text-purple-700 uppercase mb-2">Espaços</div>
-            <div className="text-3xl font-bold text-purple-600">{stats.totalSpaces}</div>
+            <div className="text-xs text-blue-600 mt-1">
+              {stats.totalSpaces} espaços
+            </div>
           </div>
           <div className="bg-gradient-to-br from-amber-50 to-yellow-50 rounded-2xl shadow-lg border border-amber-200/50 p-5 hover:shadow-xl transition-all hover:scale-105">
             <div className="text-xs font-semibold text-amber-700 uppercase mb-2">Tarefas</div>
             <div className="text-3xl font-bold text-amber-600">{stats.totalTasks}</div>
+            <div className="text-xs text-amber-600 mt-1">
+              Total do sistema
+            </div>
           </div>
         </div>
 
@@ -278,17 +509,30 @@ export default function DashboardPage() {
                 <option value="active">Ativos</option>
                 <option value="inactive">Inativos</option>
               </select>
+              
+              <select
+                value={activityFilter}
+                onChange={(e) => setActivityFilter(e.target.value)}
+                className="px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-all text-gray-900 font-medium cursor-pointer"
+              >
+                <option value="all">Toda atividade</option>
+                <option value="with_activity">Com atividade</option>
+                <option value="without_activity">Sem atividade</option>
+              </select>
             </div>
 
-            <button
-              onClick={openCreateModal}
-              className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg shadow-indigo-500/30 hover:shadow-xl hover:shadow-indigo-500/40 hover:scale-105 flex items-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-              </svg>
-              Nova Conta Mãe
-            </button>
+            {/* Apenas Super Admin pode criar novas contas mães (empresas) */}
+            {(currentUser?.email === 'austmidias@gmail.com' || currentUser?.role === 'super_admin') && (
+              <button
+                onClick={openCreateModal}
+                className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-xl hover:from-indigo-700 hover:to-purple-700 transition-all shadow-lg shadow-indigo-500/30 hover:shadow-xl hover:shadow-indigo-500/40 hover:scale-105 flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Nova Conta Mãe
+              </button>
+            )}
           </div>
         </div>
 
@@ -335,6 +579,9 @@ export default function DashboardPage() {
                       Sub-usuários
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Atividade
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Criado em
                     </th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -344,20 +591,21 @@ export default function DashboardPage() {
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {filteredUsers.map((user) => (
-                    <tr key={user.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div className="flex-shrink-0 h-10 w-10 bg-indigo-100 rounded-full flex items-center justify-center">
-                            <span className="text-indigo-600 font-semibold text-sm">
-                              {user.name.charAt(0).toUpperCase()}
-                            </span>
+                    <>
+                      <tr key={user.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <div className="flex-shrink-0 h-10 w-10 bg-indigo-100 rounded-full flex items-center justify-center">
+                              <span className="text-indigo-600 font-semibold text-sm">
+                                {user.name.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                            <div className="ml-4">
+                              <div className="text-sm font-medium text-gray-900">{user.name}</div>
+                              <div className="text-sm text-gray-500">{user.email}</div>
+                            </div>
                           </div>
-                          <div className="ml-4">
-                            <div className="text-sm font-medium text-gray-900">{user.name}</div>
-                            <div className="text-sm text-gray-500">{user.email}</div>
-                          </div>
-                        </div>
-                      </td>
+                        </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleBadgeColor(user.role)}`}>
                           {getRoleName(user.role)}
@@ -373,24 +621,92 @@ export default function DashboardPage() {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {user._count?.members || 0}
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{user._count?.members || 0}</span>
+                          {user._count?.members > 0 && (
+                            <button
+                              onClick={() => toggleUserExpansion(user.id)}
+                              className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                            >
+                              {expandedUsers.has(user.id) ? 'Recolher' : 'Ver sub-usuários'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                            <span className="text-xs">{user._count?.spaces || 0} espaços</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                            <span className="text-xs">{user._count?.tasks || 0} tarefas</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                            <span className="text-xs">{user._count?.documents || 0} docs</span>
+                          </div>
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatDate(user.createdAt)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                         <div className="flex items-center justify-end gap-2">
+                          {/* Super Admin pode editar qualquer conta
+                              Admin comum só pode ver detalhes da própria conta */}
+                          {(currentUser?.email === 'austmidias@gmail.com' || currentUser?.role === 'super_admin') && (
+                            <button
+                              onClick={() => openEditModal(user)}
+                              className="text-indigo-600 hover:text-indigo-900"
+                              title="Editar"
+                            >
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                          )}
+
+                          {/* Botão para criar sub-usuário */}
+                          {(user.role === 'admin' || user.role === 'super_admin') && (
+                            <button
+                              onClick={() => openSubUserCreateModal(user.id)}
+                              className="text-green-600 hover:text-green-900"
+                              title="Criar sub-usuário"
+                            >
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                              </svg>
+                            </button>
+                          )}
+                          
                           <button
-                            onClick={() => openEditModal(user)}
-                            className="text-indigo-600 hover:text-indigo-900"
-                            title="Editar"
+                            onClick={() => {
+                              const details = `
+Detalhes da Conta: ${user.name}
+Email: ${user.email}
+Status: ${user.active ? 'Ativo' : 'Inativo'}
+Sub-usuários: ${user._count?.members || 0}
+Espaços: ${user._count?.spaces || 0}
+Tarefas: ${user._count?.tasks || 0}
+Documentos: ${user._count?.documents || 0}
+Transações: ${user._count?.transactions || 0}
+Criado em: ${formatDate(user.createdAt)}
+                              `.trim();
+                              alert(details);
+                            }}
+                            className="text-blue-600 hover:text-blue-900"
+                            title="Ver detalhes"
                           >
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                             </svg>
                           </button>
                           
-                          {user.id !== currentUser.id && (
+                          {/* Apenas Super Admin pode desativar/deletar outras contas */}
+                          {user.id !== currentUser.id && (currentUser?.email === 'austmidias@gmail.com' || currentUser?.role === 'super_admin') && (
                             <>
                               <button
                                 onClick={() => handleToggleActive(user)}
@@ -412,7 +728,7 @@ export default function DashboardPage() {
                               <button
                                 onClick={() => handleDeleteUser(user)}
                                 className="text-red-600 hover:text-red-900"
-                                title="Desativar"
+                                title="Excluir permanentemente"
                               >
                                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -423,6 +739,169 @@ export default function DashboardPage() {
                         </div>
                       </td>
                     </tr>
+                    
+                    {/* Seção de Sub-usuários Expandida */}
+                    {expandedUsers.has(user.id) && user.role === 'admin' && (
+                      <tr>
+                        <td colSpan={7} className="px-6 py-4 bg-gray-50">
+                          <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                              <h3 className="text-lg font-semibold text-gray-900">
+                                Sub-usuários de {user.name}
+                              </h3>
+                              <button
+                                onClick={() => openSubUserCreateModal(user.id)}
+                                className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 transition-all flex items-center gap-2"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                                </svg>
+                                Novo Sub-usuário
+                              </button>
+                            </div>
+                            
+                            {loadingSubUsers.has(user.id) ? (
+                              <div className="text-center py-8">
+                                <div className="inline-flex items-center gap-3 text-indigo-600">
+                                  <svg className="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                  <span className="text-sm font-medium">Carregando sub-usuários...</span>
+                                </div>
+                              </div>
+                            ) : subUsers[user.id] && subUsers[user.id].length > 0 ? (
+                              <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+                                <div className="overflow-x-auto">
+                                  <table className="min-w-full divide-y divide-gray-200">
+                                    <thead className="bg-gray-50">
+                                      <tr>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                          Usuário
+                                        </th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                          Função
+                                        </th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                          Status
+                                        </th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                          Atividade
+                                        </th>
+                                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                          Ações
+                                        </th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="bg-white divide-y divide-gray-200">
+                                      {subUsers[user.id].map((subUser) => (
+                                        <tr key={subUser.id} className="hover:bg-gray-50">
+                                          <td className="px-4 py-3 whitespace-nowrap">
+                                            <div className="flex items-center">
+                                              <div className="flex-shrink-0 h-8 w-8 bg-blue-100 rounded-full flex items-center justify-center">
+                                                <span className="text-blue-600 font-semibold text-xs">
+                                                  {subUser.name.charAt(0).toUpperCase()}
+                                                </span>
+                                              </div>
+                                              <div className="ml-3">
+                                                <div className="text-sm font-medium text-gray-900">{subUser.name}</div>
+                                                <div className="text-sm text-gray-500">{subUser.email}</div>
+                                              </div>
+                                            </div>
+                                          </td>
+                                          <td className="px-4 py-3 whitespace-nowrap">
+                                            <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                              subUser.role === 'manager' 
+                                                ? 'bg-blue-100 text-blue-800' 
+                                                : 'bg-gray-100 text-gray-800'
+                                            }`}>
+                                              {subUser.role === 'manager' ? 'Gerente' : 'Membro'}
+                                            </span>
+                                          </td>
+                                          <td className="px-4 py-3 whitespace-nowrap">
+                                            <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                              subUser.active 
+                                                ? 'bg-green-100 text-green-800' 
+                                                : 'bg-red-100 text-red-800'
+                                            }`}>
+                                              {subUser.active ? 'Ativo' : 'Inativo'}
+                                            </span>
+                                          </td>
+                                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                            <div className="flex items-center gap-3">
+                                              <span className="text-xs">{subUser._count?.tasks || 0} tarefas</span>
+                                              <span className="text-xs">{subUser._count?.documents || 0} docs</span>
+                                              <span className="text-xs">{subUser._count?.sales || 0} vendas</span>
+                                            </div>
+                                          </td>
+                                          <td className="px-4 py-3 whitespace-nowrap text-right text-sm font-medium">
+                                            <div className="flex items-center justify-end gap-2">
+                                              <button
+                                                onClick={() => openSubUserEditModal(subUser, user.id)}
+                                                className="text-indigo-600 hover:text-indigo-900"
+                                                title="Editar"
+                                              >
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                </svg>
+                                              </button>
+                                              
+                                              {subUser.active ? (
+                                                <button
+                                                  onClick={() => handleToggleSubUserActive(subUser, user.id)}
+                                                  className="text-orange-600 hover:text-orange-900"
+                                                  title="Desativar"
+                                                >
+                                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                  </svg>
+                                                </button>
+                                              ) : (
+                                                <button
+                                                  onClick={() => handleReactivateSubUser(subUser, user.id)}
+                                                  className="text-green-600 hover:text-green-900"
+                                                  title="Reativar"
+                                                >
+                                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                  </svg>
+                                                </button>
+                                              )}
+                                              
+                                              <button
+                                                onClick={() => handleDeleteSubUser(subUser, user.id)}
+                                                className="text-red-600 hover:text-red-900"
+                                                title={currentUser?.email === 'austmidias@gmail.com' ? 'Excluir permanentemente' : 'Desativar'}
+                                              >
+                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                              </button>
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-center py-8 text-gray-500">
+                                <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                                  <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                                  </svg>
+                                </div>
+                                <p className="text-sm">Nenhum sub-usuário encontrado</p>
+                                <p className="text-xs text-gray-400 mt-1">Clique em "Novo Sub-usuário" para criar o primeiro</p>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </>
                   ))}
                 </tbody>
               </table>
@@ -438,6 +917,14 @@ export default function DashboardPage() {
         onSuccess={handleModalSuccess}
         user={selectedUser}
         // organizationId removido - este app só cria contas mães (admins independentes)
+      />
+      
+      <SubUserModal
+        isOpen={subUserModalOpen}
+        onClose={closeSubUserModal}
+        onSuccess={handleSubUserModalSuccess}
+        organizationId={selectedOrganizationId}
+        subUser={selectedSubUser}
       />
     </div>
   );

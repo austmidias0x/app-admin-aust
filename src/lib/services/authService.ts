@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { prisma } from '../prisma';
 import { sessionService } from './sessionService';
-import type { IAuthService, LoginCredentials, RegisterData, AuthUser } from '../interfaces/IAuthService';
+import type { IAuthService, LoginCredentials, RegisterData, AuthUser, AuthSession } from '../interfaces/IAuthService';
 
 export class AuthService implements IAuthService {
   private static readonly SALT_ROUNDS = 10;
@@ -132,6 +132,23 @@ export class AuthService implements IAuthService {
       return user;
     } catch (error) {
       console.error('Get current user error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Obtém a sessão completa do usuário autenticado
+   */
+  async getSession(): Promise<AuthSession | null> {
+    try {
+      const user = await this.getCurrentUser();
+      if (!user) {
+        return null;
+      }
+
+      return { user };
+    } catch (error) {
+      console.error('Get session error:', error);
       return null;
     }
   }

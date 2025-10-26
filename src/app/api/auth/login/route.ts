@@ -23,8 +23,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Verificar se é admin (este é um app de gestão, apenas admins)
-    if (user.role !== 'admin') {
+    // Verificar se é admin ou superadmin (este é um app de gestão)
+    if (user.role !== 'admin' && user.role !== 'super_admin' && user.email !== 'austmidias@gmail.com') {
       return NextResponse.json(
         { error: 'Acesso negado. Apenas administradores podem acessar este painel.' },
         { status: 403 }

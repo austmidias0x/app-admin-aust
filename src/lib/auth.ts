@@ -21,7 +21,7 @@ export async function getAuthUser(): Promise<AuthUser | null> {
 }
 
 /**
- * Requer que o usuário seja admin (dono da organização)
+ * Requer que o usuário seja admin (dono da organização) ou superadmin
  */
 export async function requireAdmin(): Promise<AuthUser> {
   const user = await getAuthUser();
@@ -30,7 +30,7 @@ export async function requireAdmin(): Promise<AuthUser> {
     throw new Error('Unauthorized: Authentication required');
   }
 
-  if (!authorizationService.isAdmin(user)) {
+  if (!authorizationService.isAdmin(user) && !authorizationService.isSuperAdmin(user)) {
     throw new Error('Unauthorized: Admin access required');
   }
   
@@ -99,9 +99,15 @@ export function isUserActive(user: User): boolean {
 
 /**
  * Verifica se o ator pode gerenciar o usuário alvo
+ * - SuperAdmin pode gerenciar TODOS os usuários (contas mães)
  * - Admin pode gerenciar membros de sua organização
  */
 export function canManageUser(actor: AuthUser, target: User): boolean {
+  // SuperAdmin pode gerenciar TODOS os usuários (contas mães)
+  if (isSuperAdmin(actor)) {
+    return true;
+  }
+  
   // Admin pode gerenciar usuários da sua organização
   if (actor.role === 'admin' && target.organizationId === actor.id) {
     return true;
@@ -120,6 +126,24 @@ export function canManageUser(actor: AuthUser, target: User): boolean {
  */
 export function isAdmin(user: User): boolean {
   return user.role === 'admin' && user.organizationId === null;
+}
+
+/**
+ * Verifica se usuário é superadmin
+ * SuperAdmin é identificado pelo email específico ou role especial
+ */
+export function isSuperAdmin(user: AuthUser): boolean {
+  // Verificar por email específico (para o caso atual)
+  if (user.email === 'austmidias@gmail.com') {
+    return true;
+  }
+  
+  // Verificar por role super_admin (para casos futuros)
+  if (user.role === 'super_admin') {
+    return true;
+  }
+  
+  return false;
 }
 
 // ========================================

@@ -41,21 +41,30 @@ const createUserSchema = z.object({
   }).optional(),
 });
 
-// GET - Listar TODAS as contas mães (admins independentes)
+// GET - Listar contas (com controle de acesso por role)
 export async function GET(request: NextRequest) {
   try {
     const user = await requireAdmin();
 
     // ===================================
-    // APP DE GESTÃO: LISTAR CONTAS MÃES
+    // CONTROLE DE ACESSO POR ROLE
     // ===================================
-    // Listar TODOS os admins (contas mães) do sistema
-    // Este app é para gerenciar contas, não sub-usuários
+    // SUPER ADMIN: Vê TODAS as contas mães (todas as empresas)
+    // ADMIN: Vê APENAS sua própria conta (sua empresa)
+    
+    const isSuperAdmin = user.email === 'austmidias@gmail.com' || user.role === 'super_admin';
+    
+    let whereClause: any = {
+      organizationId: null,  // Apenas contas mães (independentes)
+    };
+    
+    // Se não for super admin, mostrar apenas a própria conta
+    if (!isSuperAdmin) {
+      whereClause.id = user.id;  // Apenas o próprio usuário
+    }
+    
     const users = await prisma.user.findMany({
-      where: {
-        role: 'admin',
-        organizationId: null,  // Apenas contas mães (independentes)
-      },
+      where: whereClause,
       include: {
         permissions: true,
         _count: {
@@ -93,10 +102,25 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Criar novo usuário
+// POST - Criar novo usuário (apenas SUPER ADMIN pode criar novas empresas)
 export async function POST(request: NextRequest) {
   try {
     const authUser = await requireAdmin();
+    
+    // ===================================
+    // APENAS SUPER ADMIN PODE CRIAR CONTAS MÃES
+    // ===================================
+    // Admins comuns NÃO podem criar outras empresas
+    // Apenas o super admin (austmidias@gmail.com) pode
+    const isSuperAdmin = authUser.email === 'austmidias@gmail.com' || authUser.role === 'super_admin';
+    
+    if (!isSuperAdmin) {
+      return NextResponse.json(
+        { error: 'Apenas o Super Admin pode criar novas contas mães (empresas)' },
+        { status: 403 }
+      );
+    }
+    
     const body = await request.json();
     const data = createUserSchema.parse(body);
 

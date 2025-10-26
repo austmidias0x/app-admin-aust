@@ -175,7 +175,7 @@ export async function PUT(
   }
 }
 
-// DELETE - Desativar usuário (soft delete)
+// DELETE - Excluir usuário (hard delete para superadmin, soft delete para admin)
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -204,20 +204,34 @@ export async function DELETE(
     // Não permitir deletar a si mesmo
     if (authUser.id === id) {
       return NextResponse.json(
-        { error: 'Você não pode desativar sua própria conta' },
+        { error: 'Você não pode excluir sua própria conta' },
         { status: 400 }
       );
     }
 
-    // Soft delete - apenas desativa usando Prisma
-    await prisma.user.update({
-      where: { id },
-      data: { active: false },
-    });
+    // Verificar se é superadmin
+    const isSuperAdmin = authUser.email === 'austmidias@gmail.com' || authUser.role === 'super_admin';
+    
+    if (isSuperAdmin) {
+      // Hard delete para superadmin - remove completamente do banco
+      await prisma.user.delete({
+        where: { id },
+      });
 
-    return NextResponse.json({
-      message: 'Usuário desativado com sucesso',
-    });
+      return NextResponse.json({
+        message: 'Usuário excluído permanentemente com sucesso',
+      });
+    } else {
+      // Soft delete para admin comum - apenas desativa
+      await prisma.user.update({
+        where: { id },
+        data: { active: false },
+      });
+
+      return NextResponse.json({
+        message: 'Usuário desativado com sucesso',
+      });
+    }
   } catch (error: any) {
     if (error.message?.includes('Unauthorized')) {
       return NextResponse.json(
@@ -228,7 +242,7 @@ export async function DELETE(
 
     console.error('Delete user error:', error);
     return NextResponse.json(
-      { error: 'Erro ao desativar usuário' },
+      { error: 'Erro ao excluir usuário' },
       { status: 500 }
     );
   }
