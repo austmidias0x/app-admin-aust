@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { authService } from '@/lib/services/authService';
 import { sessionService } from '@/lib/services/sessionService';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 const loginSchema = z.object({
   email: z.string().email('Email inválido'),
   password: z.string().min(1, 'Senha obrigatória'),

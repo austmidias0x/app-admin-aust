@@ -12,10 +12,10 @@ export class AuthService implements IAuthService {
   async login(credentials: LoginCredentials): Promise<AuthUser | null> {
     try {
       const { email, password } = credentials;
+      const normalizedEmail = email.toLowerCase().trim();
 
-      // Buscar usuário com permissões
       const user = await prisma.user.findUnique({
-        where: { email: email.toLowerCase().trim() },
+        where: { email: normalizedEmail },
         include: { permissions: true },
       });
 
@@ -23,13 +23,12 @@ export class AuthService implements IAuthService {
         return null;
       }
 
-      // Verificar senha
       const isPasswordValid = await this.verifyPassword(password, user.password);
+      
       if (!isPasswordValid) {
         return null;
       }
 
-      // Verificar se usuário está ativo
       if (!user.active) {
         return null;
       }
@@ -158,7 +157,6 @@ export class AuthService implements IAuthService {
    */
   async verifyPassword(password: string, hash: string): Promise<boolean> {
     try {
-      // Fallback: se a senha no banco não for hash (compatibilidade temporária)
       if (!hash.startsWith('$2')) {
         return password === hash;
       }
